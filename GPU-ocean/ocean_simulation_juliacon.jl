@@ -11,7 +11,7 @@ using Oceananigans.TurbulenceClosures
 using Oceananigans.Advection: VelocityStencil
 
 #####
-##### Define Parameters
+##### Define Parameters and load data
 #####
 
 latitude = (-84.375, 84.375)
@@ -26,9 +26,7 @@ Lz = 3600
 # Running on a GPU
 arch = GPU()
 
-reference_density = 1035
-
-### Load in all the required data
+#### Load in all the required data
 
 file_bathymetry          = jldopen("bathymetry_juliacon.jld2")
 file_boundary_conditions = jldopen("boundary_conditions_juliacon.jld2")
@@ -40,8 +38,9 @@ Tˢ = file_boundary_conditions["surface_T"]
 
 bathymetry = file_bathymetry["bathymetry"]
 
-bathymetry = arch_array(arch, bathymetry_data)
+### Move all required data to GPU!
 
+bathymetry = arch_array(arch, bathymetry_data)
 τˣ = arch_array(arch, τˣ)
 τʸ = arch_array(arch, τʸ)
 Tˢ = arch_array(arch, Tˢ)
@@ -66,19 +65,30 @@ linearly_spaced_faces(k) = k==1 ? -Lz : - Lz + sum(Δz_center_linear.(1:k-1))
 grid = ImmersedBoundaryGrid(underlying_grid, GridFittedBottom(bathymetry))
 
 #####
-##### Physics and model setup
+##### Physics 
 #####
 
-νh = 1e+4
-νz = 1e+1
-κh = 1e+3
-κz = 1e-4
+# Coriolis force
+coriolis = HydrostaticSphericalCoriolis()
 
-# Set up diffusivities (vertical, horizontal and )
+# Buoyancy
+buoyancy = SeawaterBuoyancy(constant_salinity=30)
 
-vertical_diffusivity   = VerticalScalarDiffusivity(VerticallyImplicitTimeDiscretization(), ν = νz, κ = κz)
-horizontal_diffusivity = HorizontalScalarDiffusivity(ν = νh, κ = κh)
+# Diffusivities (vertical, horizontal and convective adjustment)
+vertical_diffusivity   = VerticalScalarDiffusivity(VerticallyImplicitTimeDiscretization(), ν = 1.0, κ = 1e-4)
+horizontal_diffusivity = HorizontalScalarDiffusivity(ν = 1e+4, κ = 1e+3)
 convective_adjustment  = ConvectiveAdjustmentVerticalDiffusivity(convective_κz = 1.0)
+
+closure = (vertical_diffusivity, horizontal_diffusivity, convective_adjustment)
+
+#####
+##### Numerical methods (advection, free surface)
+#####
+
+momentum_advection = WENO(vector_invariant = VelocityStencil())
+tracer_advection   = WENO()
+
+free_surface       = ImplicitFreeSurface()
 
 #####
 ##### Boundary conditions / constant-in-time surface forcing
@@ -91,11 +101,9 @@ convective_adjustment  = ConvectiveAdjustmentVerticalDiffusivity(convective_κz 
     return p.λ * (T_surface - p.T★[i, j, 1])
 end
 
-T_surface_relaxation_bc = FluxBoundaryCondition(surface_temperature_relaxation,
-                                                discrete_form = true,
-                                                parameters = (λ = λ, T★ = Tˢ))
+T_surface_relaxation_bc = FluxBoundaryCondition(surface_temperature_relaxation, discrete_form = true, parameters = (λ = λ, T★ = Tˢ))
 
-@inline wind_stress(i, j, grid, clock, fields, τ) = τ[i, j, 1]
+@inline wind_stress(i, j, grid, clock, fields, τ) = τ[i, j]
 
 u_wind_stress_bc = FluxBoundaryCondition(wind_stress, discrete_form = true, parameters = τˣ)
 v_wind_stress_bc = FluxBoundaryCondition(wind_stress, discrete_form = true, parameters = τʸ)
@@ -115,29 +123,25 @@ v_bottom_drag_bc = FluxBoundaryCondition(v_bottom_drag, discrete_form = true, pa
 u_immersed_drag_bc = FluxBoundaryCondition(u_immersed_drag, discrete_form = true, parameters = μ)
 v_immersed_drag_bc = FluxBoundaryCondition(v_immersed_drag, discrete_form = true, parameters = μ)
 
-u_imm_bcs = ImmersedBoundaryCondition(bottom = u_immersed_drag_bc)
-v_imm_bcs = ImmersedBoundaryCondition(bottom = v_immersed_drag_bc)
-
-u_bcs = FieldBoundaryConditions(top = u_wind_stress_bc, bottom = u_bottom_drag_bc, immersed = u_imm_bcs)
-v_bcs = FieldBoundaryConditions(top = v_wind_stress_bc, bottom = v_bottom_drag_bc, immersed = v_imm_bcs)
+u_bcs = FieldBoundaryConditions(top = u_wind_stress_bc, bottom = u_bottom_drag_bc, immersed = u_immersed_drag_bc)
+v_bcs = FieldBoundaryConditions(top = v_wind_stress_bc, bottom = v_bottom_drag_bc, immersed = v_immersed_drag_bc)
 T_bcs = FieldBoundaryConditions(top = T_surface_relaxation_bc)
+
+boundary_conditions = (u=u_bcs, v=v_bcs, T=T_bcs)
 
 #####
 ##### Model Setup
 #####
 
-free_surface = ImplicitFreeSurface(preconditioner_method = :SparseInverse, preconditioner_settings = (ε = 0.05, nzrel = 10))
-equation_of_state=LinearEquationOfState(thermal_expansion=2e-4)
-
-model = HydrostaticFreeSurfaceModel(grid = grid,
-                                    free_surface = free_surface,
-                                    momentum_advection = WENO(vector_invariant=VelocityStencil()),
-                                    tracer_advection = WENO(),
-                                    coriolis = HydrostaticSphericalCoriolis(),
-                                    boundary_conditions = (u=u_bcs, v=v_bcs, T=T_bcs),
-                                    buoyancy = SeawaterBuoyancy(; equation_of_state, constant_salinity=30),
-                                    tracers = :T,
-                                    closure = (vertical_diffusivity, convective_adjustment, horizontal_diffusivity)) 
+model = HydrostaticFreeSurfaceModel(;grid,
+                                     tracers = :T,
+                                     coriolis,
+                                     buoyancy,
+                                     closure,
+                                     free_surface,
+                                     momentum_advection,
+                                     tracer_advection,
+                                     boundary_conditions) 
 
 #####
 ##### Initial condition:
@@ -211,10 +215,3 @@ run!(simulation)
     Free surface: $(typeof(model.free_surface).name.wrapper)
     Time step: $(prettytime(Δt))
 """
-
-####
-#### Visualize solution
-####
-
-using GLMakie, JLD2
-
