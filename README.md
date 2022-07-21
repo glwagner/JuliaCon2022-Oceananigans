@@ -1,6 +1,9 @@
 # JuliaCon2022-Oceananigans
 
-Code for the hands-on Oceananigans workshop at JuliaCon 2022
+Code for the hands-on Oceananigans workshop at JuliaCon 2022 featuring:
+
+1. Convective instability on the CPU
+2. Global ocean simulation on the GPU
 
 ## Convective instability
 
