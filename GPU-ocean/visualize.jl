@@ -23,7 +23,7 @@ function visualize_solution(output_prefix, grid)
     cpu_grid   = on_architecture(CPU(), grid)
     
     bathymetry_mask = deepcopy(cpu_grid.immersed_boundary.bottom_height[1:grid.Nx, 1:grid.Ny])
-    bathymetry_mask[bathymetry_mask .> 0] .= NaN 
+    bathymetry_mask[bathymetry_mask .== 0] .= NaN 
     bathymetry_mask[bathymetry_mask .< 0] .= 0.0
 
     surface_file    = jldopen(output_prefix * "_surface.jld2")
