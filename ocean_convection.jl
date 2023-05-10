@@ -14,7 +14,7 @@ grid = RectilinearGrid(size=(128, 128), x=(0, 128), z=(-64, 0),
 # high-order numerics for advection
 model = NonhydrostaticModel(; grid,
                             timestepper = :RungeKutta3,
-                            advection = WENO5(),
+                            advection = WENO(),
                             tracers = :b,
                             closure = ScalarDiffusivity(ν=1e-1, κ=1e-1),
                             buoyancy = BuoyancyTracer())
